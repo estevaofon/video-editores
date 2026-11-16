@@ -281,7 +281,8 @@ if command -v uv >/dev/null; then
 else
   echo "  (uv ausente: teste do MCP pulado)"
 fi
-# integração com Codex, OpenCode e Kiro (escopo de projeto): skills portadas, MCP registrado, regras; idempotente; guarda de procedência; remoção limpa
+# integração com Codex, OpenCode, Kiro e ZCode (escopo de projeto): os três primeiros de AGENTS.md e os três menos
+# o Kiro dividem .agents/skills — cabeçalho neutro e chamadas somadas para valer para todos; manifesto lista quem depende
 mkdir -p integ/.codex && printf '[model]\nname = "x"\n\n[mcp_servers.outro]\ncommand = "y"\n' > integ/.codex/config.toml
 printf '# Meu projeto\n\nRegras minhas.\n' > integ/AGENTS.md
 python3 -m video_editores.cli integrar todos --projeto integ >/dev/null
@@ -297,37 +298,87 @@ for s in (p / ".kiro/skills").glob("*/SKILL.md"):
     t = s.read_text(); fm = re.match(r"---\n(.*?)\n---", t, re.S).group(1)
     assert re.search(r"^name: " + re.escape(s.parent.name) + "$", fm, re.M), s      # Kiro exige name == pasta
     assert "CLAUDE_PLUGIN_ROOT" not in t and "Fora do Claude Code" in t and "video-editores:port" in t, s
+for s in (p / ".agents/skills").glob("*/SKILL.md"):
+    t = s.read_text()
+    assert "harness ZCode" not in t and "AskUserQuestion" not in t, s   # pasta dividida: cabeçalho neutro, o ZCode não dita as regras dos três
 assert (p / ".agents/skills/video-docs/glossario-ingles.json").is_file()
 man = json.loads((p / ".agents/skills/.video-editores.json").read_text())
-assert man["versao"] == __version__ and man["escopo"] == "projeto" and "corte" not in man["skills"] and "partitura" in man["skills"], man
+assert man["versao"] == __version__ and man["escopo"] == "projeto" and man["agentes"] == ["codex", "opencode", "zcode"], man
+assert "corte" not in man["skills"] and "partitura" in man["skills"], man
+for nome in man["skills"]:   # só as nossas (a alheia homônima não leva cabeçalho nem carimbo)
+    t = (p / ".agents/skills" / nome / "SKILL.md").read_text()
+    assert "CLAUDE_PLUGIN_ROOT" not in t and "Fora do Claude Code" in t and "video-editores:port" in t, nome
 assert "Minha skill corte pessoal" in (p / ".agents/skills/corte/SKILL.md").read_text()  # guarda de procedência
 ag = (p / "AGENTS.md").read_text(); assert ag.startswith("# Meu projeto") and ag.count("video-editores:inicio") == 1, ag
+bloco = ag[ag.index("video-editores:inicio"):ag.index("video-editores:fim")]
+for o, marca in (("codex", "`$nome-da-skill`"), ("opencode", "`@nome-da-skill`"), ("zcode", "use a skill")):
+    assert o in bloco and marca in bloco, (o, bloco)   # o mesmo AGENTS.md serve aos três: chamadas somadas
 oc = json.loads((p / "opencode.json").read_text())["mcp"]["servers"]["video-editores"]; assert oc["type"] == "local" and oc["command"][-2] == "--raiz"
 ki = json.loads((p / ".kiro/settings/mcp.json").read_text())["mcpServers"]["video-editores"]; assert ki["command"] and "args" in ki
 cx = tomllib.loads((p / ".codex/config.toml").read_text()); assert cx["model"]["name"] == "x" and cx["mcp_servers"]["outro"]["command"] == "y"
 assert cx["mcp_servers"]["video-editores"]["args"][-1].endswith("integ")
 st = (p / ".kiro/steering/video-editores.md").read_text(); assert st.startswith("---\ninclusion: always") and st.count("inicio -->") == 1
 PY
+rm integ/.agents/skills/legenda/SKILL.md   # port interrompido: pasta sem SKILL.md, mas listada no manifesto
+python3 -m video_editores.cli integrar todos --projeto integ >/dev/null
+grep -q "Fora do Claude Code" integ/.agents/skills/legenda/SKILL.md   # o manifesto diz que é nossa: re-portada, não vira "alheia"
+printf 'skill alheia hom\xf4nima com acentua\xe7\xe3o, gravada em latin-1\n' > integ/.agents/skills/3d/SKILL.md  # encoding errado não derruba
+python3 -m video_editores.cli integrar todos --projeto integ >/dev/null
+python3 -c "assert open('integ/.agents/skills/3d/SKILL.md', 'rb').read().startswith(b'skill alheia hom')"   # não é nossa: preservada (grep com locale UTF-8 falha em latin-1)
 # antideriva: manifesto adulterado para versão velha e o --mostrar tem que acusar
 python3 -c "import json, pathlib; f = pathlib.Path('integ/.agents/skills/.video-editores.json'); d = json.loads(f.read_text()); d['versao'] = '0.9.0'; f.write_text(json.dumps(d))"
 MOSTRA=$(python3 -m video_editores.cli integrar codex --projeto integ --mostrar)   # captura antes do grep (SIGPIPE, ver 0.12.1)
 echo "$MOSTRA" | grep -q "DESATUALIZADO (port 0.9.0"
-python3 -m video_editores.cli integrar todos --projeto integ --remover >/dev/null
-test ! -e integ/.agents/skills/videoaula && test ! -e integ/.kiro/steering/video-editores.md
-test ! -e integ/.agents/skills/.video-editores.json
+# port feito à mão na 0.13 (cabeçalho sem carimbo e sem o v da versão) é reconhecido como DESATUALIZADO, não "não instalado"
+mkdir -p integ2/.agents/skills/lettering
+printf -- '---\nname: lettering\n---\n\n> **Fora do Claude Code.** Esta skill vem do plugin [video-editores](https://github.com/fmnapoli/video-editores) 0.13.0. Os scripts estão em\n> `/x`.\n' > integ2/.agents/skills/lettering/SKILL.md
+MOSTRA2=$(python3 -m video_editores.cli integrar codex --projeto integ2 --mostrar)
+echo "$MOSTRA2" | grep -q "DESATUALIZADO (port 0.13.0"
+# remoção na pasta dividida: enquanto outro agente depende dela, as skills ficam e só a lista diminui
+python3 -m video_editores.cli integrar codex --projeto integ --remover > rem.txt
+grep -q "skills mantidas" rem.txt
+python3 - <<'PY'
+import json, pathlib
+p = pathlib.Path("integ")
+man = json.loads((p / ".agents/skills/.video-editores.json").read_text())
+assert man["agentes"] == ["opencode", "zcode"], man
+assert (p / ".agents/skills/videoaula/SKILL.md").is_file()   # opencode e zcode ainda usam
+ag = (p / "AGENTS.md").read_text()
+bloco = ag[ag.index("video-editores:inicio"):ag.index("video-editores:fim")]
+assert "codex" not in bloco and "opencode" in bloco and "zcode" in bloco, bloco   # regrava para quem resta
+PY
+python3 -m video_editores.cli integrar zcode --projeto integ --remover >/dev/null
+python3 -c "import json; assert json.load(open('integ/.agents/skills/.video-editores.json'))['agentes'] == ['opencode']"
+rm integ/.agents/skills/legenda/SKILL.md   # de novo interrompida: agora a remoção é guiada pelo manifesto
+python3 -m video_editores.cli integrar todos --projeto integ --remover >/dev/null   # esvazia a lista e limpa
+test ! -e integ/.agents/skills/videoaula && test ! -e integ/.agents/skills/legenda
+test ! -e integ/.agents/skills/.video-editores.json && test ! -e integ/.kiro/steering/video-editores.md
 grep -q "Minha skill corte pessoal" integ/.agents/skills/corte/SKILL.md   # --remover também preserva a alheia
+python3 -c "assert open('integ/.agents/skills/3d/SKILL.md', 'rb').read().startswith(b'skill alheia hom')"
 grep -q "Regras minhas" integ/AGENTS.md && ! grep -q "video-editores:inicio" integ/AGENTS.md
 python3 -c "import tomllib; d=tomllib.loads(open('integ/.codex/config.toml').read()); assert 'video-editores' not in d['mcp_servers'] and d['mcp_servers']['outro']"
-pass "integrar: Codex, OpenCode e Kiro (skills, MCP, regras), idempotente, guarda de procedência, status do port, remoção preserva o que não é nosso"
+python3 -c "import json; d=json.load(open('integ/opencode.json')); assert 'video-editores' not in d['mcp']['servers']"
+pass "integrar: Codex, OpenCode, Kiro e ZCode (skills, MCP, regras) com pasta dividida (cabeçalho neutro, chamadas somadas, lista de dependentes), idempotente, guarda de procedência (latin-1, port interrompido), status do port, remoção por dependência"
+# falha de MCP (opencode.json com comentário JSONC) não derruba os agentes seguintes nem o relatório
+mkdir integ3 && printf '// comentário\n{"mcp": {"servers": {}}}' > integ3/opencode.json
+if python3 -m video_editores.cli integrar todos --projeto integ3 > t3.txt; then echo "devia falhar (opencode.json ilegível)"; exit 1; fi
+grep -q "falha no MCP integ3/opencode.json" t3.txt && grep -q "kiro: servidor MCP registrado" t3.txt && grep -q "zcode: regras gravadas" t3.txt
+pass "integrar: erro de MCP vira linha do relatório e os agentes seguintes são processados"
 
 # integração com o ZCode (escopo de usuário, em HOME isolado): skills em ~/.zcode/skills com cabeçalho próprio,
-# MCP global em ~/.zcode/cli/config.json preservando servidores de terceiros; em projeto, sem MCP (só há o global)
+# MCP global em ~/.zcode/cli/config.json — arquivo do app: nunca criado por nós, só editado quando já existe;
+# em projeto, sem MCP (só há o global)
 mkdir -p fakehome/.zcode/cli
-printf '{"mcp":{"servers":{"outro":{"type":"stdio","command":"/bin/true","args":[],"enabled":true}}}}' > fakehome/.zcode/cli/config.json
 MOSTRA=$(HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --projeto integ --mostrar)  # escopo projeto: MCP só no usuário
 echo "$MOSTRA" | grep -q "MCP → (o ZCode só registra MCP global; rode com --usuario)"
+HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --projeto integ > zc.txt
+test ! -e fakehome/.zcode/cli/config.json   # sem config do app: não gravamos um pela metade numa máquina sem ZCode
+grep -q "nada gravado" zc.txt
+printf '{"mcp":null}' > fakehome/.zcode/cli/config.json   # o app deixa null num config recém-criado: tolerar
 HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --projeto integ >/dev/null
 HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --projeto integ >/dev/null   # idempotente
+printf '{"mcp":{"servers":{"outro":{"type":"stdio","command":"/bin/true","args":[],"enabled":true}}}}' > fakehome/.zcode/cli/config.json
+HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --projeto integ >/dev/null   # preserva terceiros
 python3 - <<'PY'
 import json, pathlib
 h = pathlib.Path("fakehome")
@@ -336,7 +387,7 @@ assert len(sk) == 22 and "marca" in sk, sk
 t = (h / ".zcode/skills/legenda/SKILL.md").read_text()
 assert "CLAUDE_PLUGIN_ROOT" not in t and "harness ZCode" in t and "Agent" in t and "AskUserQuestion" in t and "video-editores:port" in t, t[:400]
 man = json.loads((h / ".zcode/skills/.video-editores.json").read_text())
-assert man["agente"] == "zcode" and man["escopo"] == "usuario", man
+assert man["agentes"] == ["zcode"] and man["escopo"] == "usuario", man   # pasta exclusiva do ZCode: só ele na lista
 cfg = json.loads((h / ".zcode/cli/config.json").read_text())
 v = cfg["mcp"]["servers"]["video-editores"]
 assert v["type"] == "stdio" and v["args"][-2] == "--raiz" and v["enabled"] is True, v
@@ -345,7 +396,11 @@ PY
 HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --remover >/dev/null
 test ! -e fakehome/.zcode/skills/legenda && test ! -e fakehome/.zcode/skills/.video-editores.json
 python3 -c "import json; d = json.load(open('fakehome/.zcode/cli/config.json')); assert 'video-editores' not in d['mcp']['servers'] and 'outro' in d['mcp']['servers']"
-pass "integrar zcode: skills de usuário com cabeçalho próprio, MCP global (stdio) preservando terceiros, idempotente e reversível"
+rm fakehome/.zcode/cli/config.json
+HOME="$PWD/fakehome" python3 -m video_editores.cli integrar zcode --usuario --remover > zc2.txt
+test ! -e fakehome/.zcode/cli/config.json   # remover sem config: sai cedo, não recria o arquivo do app
+grep -q "nada a remover" zc2.txt
+pass "integrar zcode: skills de usuário com cabeçalho próprio, MCP global (stdio) preservando terceiros e sem criar o config do app, idempotente e reversível"
 
 if command -v uv >/dev/null; then
   # o comando que os agentes vão executar sobe o servidor por stdio e responde

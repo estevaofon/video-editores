@@ -27,17 +27,22 @@ Depois, reinicie o agente. As skills aparecem com os mesmos nomes do plugin (`vi
 | Regras | bloco em `AGENTS.md` | bloco em `AGENTS.md` (ou `~/.config/opencode/AGENTS.md`) | `.kiro/steering/video-editores.md` com `inclusion: always` (a CLI do Kiro também lê `AGENTS.md`) | bloco em `AGENTS.md` do projeto (sem regras globais conhecidas) |
 | Invocar skill | `$nome` ou `/skills`; implícito pela descrição | `@nome`; implícito pela descrição | implícito pela descrição; `#` para steering manual | pela descrição ou pedindo `use a skill <nome>` |
 
-Codex, OpenCode e ZCode compartilham `.agents/skills/` em projeto, então o mesmo projeto serve aos três. Em
-`AGENTS.md` e no steering o bloco fica entre `<!-- video-editores:inicio -->` e `<!-- video-editores:fim -->`; o
-resto do arquivo é preservado. No `config.toml` do Codex só a tabela do servidor é reescrita; nos JSONs, só a chave
-do servidor.
+Codex, OpenCode e ZCode compartilham `.agents/skills/` em projeto, então o mesmo projeto serve aos três. Por
+dividirem a pasta, o cabeçalho das skills lá é o neutro (o cabeçalho traduzido para o ZCode fica só no escopo de
+usuário, em `~/.zcode/skills/`) e o bloco do `AGENTS.md` soma as chamadas dos três. O manifesto oculto guarda quem
+depende do destino: remover um agente preserva a pasta e o bloco enquanto sobrar dependente na lista, e só apaga
+quando ela esvazia. Em `AGENTS.md` e no steering o bloco fica entre `<!-- video-editores:inicio -->` e
+`<!-- video-editores:fim -->`; o resto do arquivo é preservado. No `config.toml` do Codex só a tabela do servidor é
+reescrita; nos JSONs, só a chave do servidor (o config do ZCode, gerenciado pelo app, nunca é criado — só editado se
+já existir).
 
 ## Antideriva: port desatualizado é detectável
 
 Toda portação carimba a versão (`<!-- video-editores:port X.Y.Z -->` na primeira linha após o frontmatter) e cada
-destino recebe um manifesto oculto `.video-editores.json` (versão, agente, escopo, raiz, skills). `integrar
+destino recebe um manifesto oculto `.video-editores.json` (versão, agentes, escopo, raiz, skills). `integrar
 --mostrar` compara o instalado com a versão atual e acusa `DESATUALIZADO` com o comando de correção — lendo o
-manifesto ou o carimbo, então portações feitas à mão de versões antigas também são reconhecidas. `make doctor`
+manifesto ou o carimbo, então portações feitas à mão de versões antigas também são reconhecidas, inclusive as da
+0.13, cujo cabeçalho não tinha o `v` da versão. `make doctor`
 faz a mesma checagem nas pastas globais (seção "Integração"). Sobrescrever e remover só toca em portação do
 plugin: pasta homônima que não é do plugin é preservada e relatada.
 

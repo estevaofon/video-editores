@@ -9,9 +9,11 @@ Para cada agente, três coisas (ADR-12):
 Escopos: --projeto DIR (padrão: pasta atual) grava dentro do projeto; --usuario grava na configuração global.
 Tudo idempotente: rodar de novo atualiza o que é nosso e não toca no resto do arquivo. O que é nosso é reconhecível:
 todo port carimba a versão (`<!-- video-editores:port X.Y.Z -->`) e cada destino ganha um manifesto oculto
-(`.video-editores.json`) com versão, raiz e lista de skills. `--mostrar` compara o instalado com a versão atual e
-relata ports desatualizados; sobrescrever e remover só toca em portação do plugin — pasta homônima alheia é
-preservada com aviso.
+(`.video-editores.json`) com versão, raiz, lista de skills e dos agentes que dependem daquele destino — Codex,
+OpenCode e ZCode dividem `.agents/skills` e AGENTS.md em projeto, então lá o cabeçalho é o neutro, o bloco soma as
+chamadas dos três e o destino só é removido quando a lista de dependentes esvazia. `--mostrar` compara o instalado
+com a versão atual e relata ports desatualizados; sobrescrever e remover só toca em portação do plugin — pasta
+homônima alheia é preservada com aviso.
 
 Pastas e arquivos (fontes: docs oficiais, nov/2026):
   Codex     skills .agents/skills/ ou ~/.agents/skills/ · MCP .codex/config.toml ou ~/.codex/config.toml [mcp_servers.x] · AGENTS.md
@@ -81,11 +83,19 @@ CABECALHO_ZCODE = """> **Fora do Claude Code (harness ZCode).** Esta skill vem d
 
 # ---------------------------------------------------------------- procedência e estado dos ports
 def _cabeca(sk: Path) -> str:
-    """Primeiras linhas do SKILL.md, onde moram carimbo e cabeçalho."""
+    """Primeiras linhas do SKILL.md, onde moram carimbo e cabeçalho. Ilegível (encoding estranho) = não é nossa."""
     try:
         return "\n".join(sk.read_text(encoding="utf-8").splitlines()[:20])
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ""
+
+
+def _manifesto(dest: Path) -> dict:
+    """Conteúdo do manifesto oculto da pasta `dest` ({} quando não há manifesto legível)."""
+    try:
+        return json.loads((dest / MANIFESTO).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def _eh_portacao(alvo: Path) -> bool:
@@ -97,35 +107,41 @@ def _eh_portacao(alvo: Path) -> bool:
     return "video-editores:port" in cab or "plugin [video-editores]" in cab
 
 
+def _nossa(alvo: Path, nome: str, nossos: set) -> bool:
+    """Portação nossa: SKILL.md com carimbo/cabeçalho do plugin, ou pasta que o manifesto lista (port interrompido
+    — Ctrl-C ou disco cheio entre o mkdir e a escrita — que não pode virar 'alheia' só porque ficou sem SKILL.md)."""
+    return _eh_portacao(alvo) if (alvo / "SKILL.md").is_file() else nome in nossos
+
+
 def _versao_portada(sk: Path) -> str | None:
-    m = re.search(r"video-editores:port\s+v?([0-9][0-9.]*)", _cabeca(sk))
+    # `(\d+(?:\.\d+)*)` e não `[0-9.]*`: o cabeçalho até a 0.13 era "… video-editores) 0.13.0." e o ponto final da
+    # frase não pode entrar na versão; o `v` era opcional lá (e no carimbo sempre esteve)
+    m = re.search(r"video-editores:port\s+v?(\d+(?:\.\d+)*)", _cabeca(sk))
     if not m:
-        m = re.search(r"plugin \[video-editores\]\(\S*?\)\s+v([0-9][0-9.]*)", _cabeca(sk))
+        m = re.search(r"plugin \[video-editores\]\(\S*?\)\s+v?(\d+(?:\.\d+)*)", _cabeca(sk))
     return m.group(1) if m else None
 
 
 def _estado_skills(dest: Path, agente: str, usuario: bool) -> str:
-    """Estado da portação em `dest`: não instalado / em dia / DESATUALIZADO, lendo o manifesto ou o carimbo."""
+    """Estado da portação em `dest`: não instalado / em dia / DESATUALIZADO, lendo o manifesto ou os carimbos.
+
+    O manifesto é a fonte primária (uma versão só); sem ele, os carimbos — todas as versões distintas, porque um
+    re-port parcial deixaria parte das skills em versão velha e a primeira em ordem alfabética não representa nada.
+    """
     if dest is None or not dest.is_dir():
         return "não instalado"
-    v = None
-    man = dest / MANIFESTO
-    if man.is_file():
-        try:
-            v = json.loads(man.read_text(encoding="utf-8")).get("versao")
-        except (OSError, ValueError):
-            v = None
-    if v is None:
-        for sk in sorted(dest.glob("*/SKILL.md")):
-            v = _versao_portada(sk)
-            if v:
-                break
-    if v is None:
+    vers = []
+    man_vers = _manifesto(dest).get("versao")
+    if man_vers:
+        vers = [man_vers]
+    else:
+        vers = sorted({v for sk in sorted(dest.glob("*/SKILL.md")) if (v := _versao_portada(sk))})
+    if not vers:
         return "não instalado"
-    if v == __version__:
-        return f"em dia ({v})"
+    if set(vers) == {__version__}:
+        return f"em dia ({__version__})"
     de_novo = f"video-editores integrar {agente}" + (" --usuario" if usuario else "")
-    return f"DESATUALIZADO (port {v} ≠ plugin {__version__}; rode `{de_novo}` de novo)"
+    return f"DESATUALIZADO (port {', '.join(vers)} ≠ plugin {__version__}; rode `{de_novo}` de novo)"
 
 
 # ---------------------------------------------------------------- skills
@@ -151,18 +167,30 @@ def _portar_skill(src: Path, dst: Path, raiz: Path, cabecalho: str | None = None
 def exportar_skills(dest: Path, agente: str, escopo: str, remover=False, cabecalho=None) -> tuple:
     """Copia as skills do plugin para `dest/<nome>/SKILL.md` com guarda de procedência e manifesto oculto.
 
-    Devolve (ok, atualizadas, puladas, falhas): nomes gravados/removidos, ports substituídos, pastas alheias
-    homônimas preservadas e (nome, erro) das que falharam.
+    Devolve (ok, atualizadas, puladas, falhas, nota): nomes gravados/removidos, ports substituídos, pastas alheias
+    homônimas preservadas, (nome, erro) das que falharam e, na remoção de uma pasta compartilhada que outros
+    agentes ainda dependem, a linha que substitui a do relatório.
     """
     raiz = raiz_recursos()
     ok, atualizadas, puladas, falhas = [], [], [], []
+    man = _manifesto(dest)
+    nossos = set(man.get("skills") or [])
+    restantes = sorted(set(man.get("agentes") or []) - {agente})
+    if remover and man.get("agentes") and restantes:
+        # pasta compartilhada com outros agentes (Codex/OpenCode/ZCode dividem .agents/skills): só sai da lista
+        try:
+            (dest / MANIFESTO).write_text(json.dumps({**man, "agentes": restantes}, ensure_ascii=False, indent=2)
+                                          + "\n", encoding="utf-8")
+        except OSError as e:
+            falhas.append((MANIFESTO, str(e)))
+        return [], [], puladas, falhas, f"skills mantidas em {dest} — também usadas por {', '.join(restantes)}"
     for sk in sorted((raiz / "skills").glob("*/SKILL.md")):
         nome = sk.parent.name
         alvo = dest / nome
         if remover:
             if not alvo.is_dir():
                 continue
-            if not _eh_portacao(alvo):
+            if not _nossa(alvo, nome, nossos):
                 puladas.append(nome)  # não é nossa: não apaga
                 continue
             try:
@@ -171,7 +199,7 @@ def exportar_skills(dest: Path, agente: str, escopo: str, remover=False, cabecal
             except OSError as e:
                 falhas.append((nome, str(e)))
             continue
-        if alvo.is_dir() and not _eh_portacao(alvo):
+        if alvo.is_dir() and not _nossa(alvo, nome, nossos):
             puladas.append(nome)  # homônima alheia: não sobrescreve
             continue
         tinha = alvo.is_dir()
@@ -182,22 +210,23 @@ def exportar_skills(dest: Path, agente: str, escopo: str, remover=False, cabecal
                 atualizadas.append(nome)
         except OSError as e:
             falhas.append((nome, str(e)))
-    man = dest / MANIFESTO
+    arq = dest / MANIFESTO
     if remover:
-        if man.is_file():
+        if arq.is_file():
             try:
-                man.unlink()
+                arq.unlink()
             except OSError as e:
                 falhas.append((MANIFESTO, str(e)))
     elif ok:
         try:
             dest.mkdir(parents=True, exist_ok=True)
-            man.write_text(json.dumps({"plugin": NOME, "versao": __version__, "agente": agente, "escopo": escopo,
-                                       "raiz": str(raiz), "skills": ok}, ensure_ascii=False, indent=2) + "\n",
-                           encoding="utf-8")
+            arq.write_text(json.dumps({"plugin": NOME, "versao": __version__,
+                                       "agentes": sorted(set(man.get("agentes") or []) | {agente}),
+                                       "escopo": escopo, "raiz": str(raiz), "skills": ok},
+                                      ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except OSError as e:
             falhas.append((MANIFESTO, str(e)))
-    return ok, atualizadas, puladas, falhas
+    return ok, atualizadas, puladas, falhas, None
 
 
 # ---------------------------------------------------------------- regras (AGENTS.md / steering)
@@ -240,7 +269,8 @@ def _json_rw(arq: Path, muda):
 
 def mcp_opencode(arq: Path, cmd: list, remover=False):
     def muda(d):
-        srv = d.setdefault("mcp", {}).setdefault("servers", {})
+        d["mcp"] = d.get("mcp") or {}  # `"mcp": null` num config recém-criado pelo app não pode quebrar
+        srv = d["mcp"].setdefault("servers", {})
         if remover:
             srv.pop(NOME, None)
         else:
@@ -250,7 +280,7 @@ def mcp_opencode(arq: Path, cmd: list, remover=False):
 
 def mcp_kiro(arq: Path, cmd: list, remover=False):
     def muda(d):
-        srv = d.setdefault("mcpServers", {})
+        srv = d["mcpServers"] = d.get("mcpServers") or {}
         if remover:
             srv.pop(NOME, None)
         else:
@@ -259,11 +289,17 @@ def mcp_kiro(arq: Path, cmd: list, remover=False):
     _json_rw(arq, muda)
 
 
-def mcp_zcode(arq: Path, cmd: list, remover=False):
+def mcp_zcode(arq: Path, cmd: list, remover=False) -> str | None:
     """Config do ZCode (~/.zcode/cli/config.json): schema estrito — só as chaves conhecidas; o arquivo é gerenciado
-    pelo próprio app, então este writer só adiciona/remove a chave do servidor e preserva o resto."""
+    pelo próprio app, então este writer só adiciona/remove a chave do servidor e preserva o resto, e nunca o cria:
+    arquivo ausente é ZCode não instalado, e um config parcial confundiria o app quando ele for instalado.
+    Devolve um aviso quando nada foi gravado (vira linha do relatório)."""
+    if not arq.is_file():
+        return f"{arq} não existe (ZCode instalado?); nada {'a remover' if remover else 'gravado'} — o app cria este arquivo"
+
     def muda(d):
-        srv = d.setdefault("mcp", {}).setdefault("servers", {})
+        d["mcp"] = d.get("mcp") or {}
+        srv = d["mcp"].setdefault("servers", {})
         if remover:
             srv.pop(NOME, None)
         else:
@@ -319,6 +355,7 @@ REGISTRO = {
     "zcode": {
         "chamada": "pela descrição ou pedindo `use a skill <nome>`",
         "cabecalho": CABECALHO_ZCODE, "frontmatter": "", "nota_usuario": None,
+        "dica_mcp": "o ZCode só registra MCP global; rode com --usuario",
         "skills": (".agents/skills", ".zcode/skills"),  # em projeto o ZCode lê a mesma pasta de Codex/OpenCode
         "mcp": (None, ".zcode/cli/config.json"), "mcp_forma": mcp_zcode,  # o ZCode só registra MCP global
         "regras": ("AGENTS.md", None),
@@ -329,7 +366,7 @@ AGENTES = tuple(REGISTRO)
 
 def _dica_mcp(agente: str) -> str:
     """Quando o alvo não tem registro de MCP no escopo pedido, o que o usuário deve fazer."""
-    return "o ZCode só registra MCP global; rode com --usuario" if agente == "zcode" else "sem MCP neste escopo"
+    return REGISTRO[agente].get("dica_mcp") or "sem MCP neste escopo"
 
 
 def alvos(agente: str, projeto: Path, usuario: bool) -> dict:
@@ -368,12 +405,19 @@ def integrar(agente, projeto, usuario=False, raiz_midia=None, skills=True, mcp=T
             feito.append(f"{agente}: MCP → ({_dica_mcp(agente)})")
         feito.append(f"{agente}: regras → {a['regras'] or '(sem regras no escopo de usuário deste agente)'}")
         return feito, False
+    # pastas/arquivos que outros agentes também gravam neste escopo: Codex, OpenCode e ZCode dividem .agents/skills
+    # e AGENTS.md em projeto, então o cabeçalho e o bloco de regras têm que valer para os três
+    compartilhada = any(o != agente and alvos(o, projeto, usuario)["skills"] == a["skills"] for o in AGENTES)
     if skills:
-        ok, atualizadas, puladas, falhas = exportar_skills(a["skills"], agente, escopo, remover, a["cabecalho"])
-        msg = f"{agente}: {'removidas' if remover else 'instaladas'} {len(ok)} skills em {a['skills']}"
-        if atualizadas and not remover:
-            msg += f" ({len(atualizadas)} atualizadas de port anterior)"
-        feito.append(msg)
+        ok, atualizadas, puladas, falhas, nota = exportar_skills(a["skills"], agente, escopo, remover,
+                                                                 None if compartilhada else a["cabecalho"])
+        if nota:
+            feito.append(f"{agente}: {nota}")
+        else:
+            msg = f"{agente}: {'removidas' if remover else 'instaladas'} {len(ok)} skills em {a['skills']}"
+            if atualizadas and not remover:
+                msg += f" ({len(atualizadas)} atualizadas de port anterior)"
+            feito.append(msg)
         if puladas:
             feito.append(f"{agente}: puladas por não serem do plugin (preservei): {', '.join(sorted(puladas))}")
         for nome, erro in falhas:
@@ -383,13 +427,36 @@ def integrar(agente, projeto, usuario=False, raiz_midia=None, skills=True, mcp=T
             feito.append(a["nota_usuario"])
     if mcp:
         if a["mcp"]:
-            REGISTRO[agente]["mcp_forma"](a["mcp"], cmd, remover)
-            feito.append(f"{agente}: servidor MCP {'removido de' if remover else 'registrado em'} {a['mcp']}")
+            try:
+                aviso = REGISTRO[agente]["mcp_forma"](a["mcp"], cmd, remover)
+                feito.append(f"{agente}: {aviso}" if aviso else
+                             f"{agente}: servidor MCP {'removido de' if remover else 'registrado em'} {a['mcp']}")
+            except Exception as e:  # config ilegível (JSONC, corrompido) é falha do relatório, não traceback
+                feito.append(f"{agente}: falha no MCP {a['mcp']}: {e}")
+                falhou = True
         else:
             feito.append(f"{agente}: MCP ({_dica_mcp(agente)})")
     if regras and a["regras"]:
-        gravar_bloco(a["regras"], texto_regras(raiz_midia, a["chamada"]), remover, frontmatter=a["frontmatter"])
-        feito.append(f"{agente}: regras {'removidas de' if remover else 'gravadas em'} {a['regras']}")
+        try:
+            man = _manifesto(a["skills"]) if a["skills"] else {}
+            outros = sorted(o for o in AGENTES if o != agente and o in (man.get("agentes") or [])
+                            and alvos(o, projeto, usuario)["regras"] == a["regras"])
+            if remover and outros:
+                # o arquivo de regras também é compartilhado: regrava o bloco para quem ainda depende dele
+                chamada = "; ".join(f"{o} {alvos(o, projeto, usuario)['chamada']}" for o in outros)
+                gravar_bloco(a["regras"], texto_regras(raiz_midia, chamada), False, frontmatter=a["frontmatter"])
+                feito.append(f"{agente}: regras mantidas em {a['regras']} — também usadas por {', '.join(outros)}")
+            else:
+                chamada = a["chamada"]
+                if not remover:
+                    no_bloco = sorted({agente, *outros})
+                    if len(no_bloco) > 1:  # o mesmo AGENTS.md serve a vários: as chamadas somadas
+                        chamada = "; ".join(f"{o} {alvos(o, projeto, usuario)['chamada']}" for o in no_bloco)
+                gravar_bloco(a["regras"], texto_regras(raiz_midia, chamada), remover, frontmatter=a["frontmatter"])
+                feito.append(f"{agente}: regras {'removidas de' if remover else 'gravadas em'} {a['regras']}")
+        except Exception as e:
+            feito.append(f"{agente}: falha nas regras {a['regras']}: {e}")
+            falhou = True
     return feito, falhou
 
 

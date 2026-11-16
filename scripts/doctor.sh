@@ -73,7 +73,11 @@ if [ -n "$VERSAO" ]; then
     [ -d "$d" ] || continue
     N=$(grep -ls 'video-editores:port\|plugin \[video-editores\]' "$d"/*/SKILL.md 2>/dev/null | wc -l | tr -d ' ')
     [ "${N:-0}" -gt 0 ] || continue
-    V=$(grep -h -m1 -oE 'video-editores:port +v?[0-9][0-9.]*|plugin \[video-editores\]\([^)]*\) v[0-9][0-9.]*' "$d"/*/SKILL.md 2>/dev/null | head -1 | grep -oE '[0-9][0-9.]*$')
+    # manifesto primeiro (fonte primária do integrar); sem ele, todas as versões distintas dos carimbos —
+    # um re-port parcial não pode sair como "em dia". `(\.[0-9]+)*` exige dígito após o ponto: o cabeçalho até a
+    # 0.13 era "…video-editores) 0.13.0." e o ponto final da frase não entra na versão
+    V=$(sed -n 's/.*"versao": *"\([^"]*\)".*/\1/p' "$d/.video-editores.json" 2>/dev/null | head -1)
+    [ -n "$V" ] || V=$(grep -h -oE 'video-editores:port +v?[0-9]+(\.[0-9]+)*|plugin \[video-editores\]\([^)]*\) v?[0-9]+(\.[0-9]+)*' "$d"/*/SKILL.md 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)*$' | sort -u | paste -sd, -)
     if [ "$V" = "$VERSAO" ]; then
       ok "$N skills do plugin em $d (port $V, em dia)"
     else
