@@ -260,7 +260,9 @@ def gravar_bloco(arq: Path, bloco: str, remover=False, frontmatter: str = ""):
 
 
 # ---------------------------------------------------------------- MCP por agente
-def _json_rw(arq: Path, muda):
+def _json_rw(arq: Path, muda, remover=False):
+    if remover and not arq.is_file():
+        return  # nada registrado: remover não pode deixar um config vazio num projeto que nunca foi integrado
     dados = json.loads(arq.read_text(encoding="utf-8")) if arq.is_file() and arq.read_text(encoding="utf-8").strip() else {}
     muda(dados)
     arq.parent.mkdir(parents=True, exist_ok=True)
@@ -275,7 +277,7 @@ def mcp_opencode(arq: Path, cmd: list, remover=False):
             srv.pop(NOME, None)
         else:
             srv[NOME] = {"type": "local", "command": cmd, "timeout": {"startup": 120000, "execution": 7200000}}
-    _json_rw(arq, muda)
+    _json_rw(arq, muda, remover)
 
 
 def mcp_kiro(arq: Path, cmd: list, remover=False):
@@ -286,7 +288,7 @@ def mcp_kiro(arq: Path, cmd: list, remover=False):
         else:
             srv[NOME] = {"command": cmd[0], "args": cmd[1:], "disabled": False,
                          "autoApprove": ["listar_operacoes", "listar_modelos", "tarefa_status", "tarefas_listar", "versao", "ler_texto"]}
-    _json_rw(arq, muda)
+    _json_rw(arq, muda, remover)
 
 
 def mcp_zcode(arq: Path, cmd: list, remover=False) -> str | None:
@@ -304,7 +306,7 @@ def mcp_zcode(arq: Path, cmd: list, remover=False) -> str | None:
             srv.pop(NOME, None)
         else:
             srv[NOME] = {"type": "stdio", "command": cmd[0], "args": cmd[1:], "enabled": True}
-    _json_rw(arq, muda)
+    _json_rw(arq, muda, remover)
 
 
 def _toml_str(s):

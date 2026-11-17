@@ -364,6 +364,10 @@ mkdir integ3 && printf '// comentário\n{"mcp": {"servers": {}}}' > integ3/openc
 if python3 -m video_editores.cli integrar todos --projeto integ3 > t3.txt; then echo "devia falhar (opencode.json ilegível)"; exit 1; fi
 grep -q "falha no MCP integ3/opencode.json" t3.txt && grep -q "kiro: servidor MCP registrado" t3.txt && grep -q "zcode: regras gravadas" t3.txt
 pass "integrar: erro de MCP vira linha do relatório e os agentes seguintes são processados"
+# --remover num projeto que nunca foi integrado não deixa nada para trás (opencode.json e mcp.json do Kiro vazios)
+mkdir integ4 && python3 -m video_editores.cli integrar todos --projeto integ4 --remover >/dev/null
+test -z "$(ls -A integ4)"
+pass "integrar: --remover em projeto nunca integrado não cria arquivo de config"
 
 # integração com o ZCode (escopo de usuário, em HOME isolado): skills em ~/.zcode/skills com cabeçalho próprio,
 # MCP global em ~/.zcode/cli/config.json — arquivo do app: nunca criado por nós, só editado quando já existe;
